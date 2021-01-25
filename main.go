@@ -13,6 +13,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"github.com/vishvananda/netlink"
 	//"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/client-go/kubernetes"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -87,7 +88,12 @@ func createCR(name string, resources []Resource) error {
 		panic(err.Error())
 	}
 
-	client, err := dynamic.NewForConfig(config)
+	dyClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		panic(err)
+	}
+
+	coClient, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		panic(err)
 	}
@@ -112,6 +118,26 @@ func createCR(name string, resources []Resource) error {
 		resInterface = append(resInterface, res)
 	}
 
+	pod, err := coClient.CoreV1().Pods(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+	if err != nil {
+		panic(err)
+	}
+
+	uid := pod.UID
+	fmt.Println(pod.UID)
+	fmt.Println(pod.Name)
+	fmt.Println(pod.Namespace)
+	owners := []interface{}{}
+	owner := map[string]interface{}{
+		"apiVersion":         "v1",
+		"controller":         true,
+		"blockOwnerDeletion": false,
+		"kind":               "Pod",
+		"name":               name,
+		"uid":               uid,
+	}
+	owners = append(owners, owner)
+
 	macRes := schema.GroupVersionResource{Group: "examplecnf.openshift.io", Version: "v1", Resource: "cnfappmacs"}
 	mac := &unstructured.Unstructured{
 		Object: map[string]interface{}{
@@ -120,6 +146,7 @@ func createCR(name string, resources []Resource) error {
 			"metadata":   map[string]interface{}{
 				"name":      name,
 				"namespace": namespace,
+				"ownerReferences": owners,
 			},
 			"spec": map[string]interface{}{
 				"resources": resInterface,
@@ -128,7 +155,7 @@ func createCR(name string, resources []Resource) error {
 			},
 		},
 	}
-	_, err = client.Resource(macRes).Namespace(namespace).Create(context.TODO(), mac, metav1.CreateOptions{})
+	_, err = dyClient.Resource(macRes).Namespace(namespace).Create(context.TODO(), mac, metav1.CreateOptions{})
 	if err != nil {
 		panic(err.Error())
 	}

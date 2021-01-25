@@ -9,7 +9,6 @@ import (
 	"io/ioutil"
 	"strconv"
 	"net"
-	"encoding/json"
 
 	"k8s.io/client-go/dynamic"
 	"github.com/vishvananda/netlink"
@@ -43,17 +42,18 @@ type Device struct {
 }
 
 func main() {
-	args := os.Args[1:]
-	if len(args) == 0 {
+	if len(os.Args) < 3 {
 		fmt.Println("ERROR: Arguments of format <net_name>,<resource_name>,<vf_pci1>,<vf_pci2>,...,<vf_pciN> is required")
 		os.Exit(22)
 	}
+	name := os.Args[1]
+	args := os.Args[2:]
 
 	var resources []Resource
 	for _, arg := range args {
 		argSplit := strings.Split(arg, ",")
 		if len(argSplit) < 3 {
-			fmt.Println("ERROR: Invaid arg format %s", arg)
+			fmt.Println("ERROR: Invaid arg format ", args)
 			os.Exit(22)
 		}
 
@@ -64,7 +64,7 @@ func main() {
 		for _, pci := range pciList {
 			pciInfo, err := getVfMac(pci)
 			if err != nil {
-				fmt.Println("ERROR: Failed to get mac address of VF %s", pci)
+				fmt.Println("ERROR: Failed to get mac address of VF ", pci)
 				os.Exit(1)
 			}
 			devices = append(devices, Device{PCI: pci, MAC: pciInfo.Mac.String()})
@@ -73,8 +73,9 @@ func main() {
 	}
 
 	fmt.Println(resources)
-	err := createCR("name", resources)
+	err := createCR(name, resources)
 	if err != nil {
+		fmt.Println("ERROR: Failed to create CR - ", err)
 		os.Exit(1)
 	}
 }
@@ -91,21 +92,46 @@ func createCR(name string, resources []Resource) error {
 		panic(err)
 	}
 
-	res, _ :=  json.Marshal(resources)
-	macRes := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+	namespace := os.Getenv("NAMESPACE")
+	nodename := os.Getenv("NODENAME")
+
+	resInterface := []interface{}{}
+	for _, item := range resources {
+		devInterface := []interface{}{}
+		for _, devItem := range item.Devices {
+			dev := map[string]interface{}{
+				"pci": devItem.PCI,
+				"mac": devItem.MAC,
+			}
+			devInterface = append(devInterface, dev)
+		}
+		res := map[string]interface{}{
+			"name": item.Name,
+			"devices": devInterface,
+		}
+		resInterface = append(resInterface, res)
+	}
+
+	macRes := schema.GroupVersionResource{Group: "examplecnf.openshift.io", Version: "v1", Resource: "cnfappmacs"}
 	mac := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "examplecnf.openshift.io/v1",
 			"kind":       "CNFAppMac",
-			"metadata": map[string]interface{}{
-				"name": name,
+			"metadata":   map[string]interface{}{
+				"name":      name,
+				"namespace": namespace,
 			},
 			"spec": map[string]interface{}{
-				"resources": res,
+				"resources": resInterface,
+				"node" :     nodename,
+				"hostname":  name,
 			},
 		},
 	}
-	_, err = client.Resource(macRes).Create(context.TODO(), mac, metav1.CreateOptions{})
+	_, err = client.Resource(macRes).Namespace(namespace).Create(context.TODO(), mac, metav1.CreateOptions{})
+	if err != nil {
+		panic(err.Error())
+	}
 
 	return err
 }
